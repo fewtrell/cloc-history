@@ -17,7 +17,8 @@ Options:
   -s, --summarize MODE    Group results: "commit" (default), "day", "week",
                           "month", or "year"
   -n, --max-commits N     Process only the last N commits
-  --since COMMIT          Only process commits after COMMIT (tag, hash, etc.)
+  --since REF|DATE        Only process commits after a commit (tag, hash, branch)
+                          or after a date (e.g. "2024-06-01", "3 months ago")
   --all-parents           Follow all parents at merges (default: first-parent only)
 
 Everything after -- is passed directly to cloc. Use this to filter languages,
@@ -28,6 +29,8 @@ Examples:
   cloc-history.sh -s day
   cloc-history.sh -s week -n 200
   cloc-history.sh --since v1.0 -s month
+  cloc-history.sh --since 2024-06-01
+  cloc-history.sh --since "3 months ago" -s week
   cloc-history.sh -- --exclude-dir=vendor,node_modules
   cloc-history.sh -- --include-lang=Python,JavaScript
   cloc-history.sh -s month
@@ -83,21 +86,30 @@ fi
 # ---------------------------------------------------------------------------
 REPO_ROOT=$(git rev-parse --show-toplevel)
 
-# Resolve --since to a full hash (supports tags, short hashes, branch names, etc.)
+# Resolve --since: try as a commit ref first, fall back to date.
 SINCE_HASH=""
+SINCE_DATE=""
 if [[ -n "$SINCE_REF" ]]; then
-    SINCE_HASH=$(git rev-parse --verify "$SINCE_REF" 2>/dev/null) || {
-        echo "Error: cannot resolve --since ref '$SINCE_REF'" >&2
-        exit 1
-    }
+    if SINCE_HASH=$(git rev-parse --verify "$SINCE_REF" 2>/dev/null); then
+        echo "Using commit $(git log -1 --format='%h  %s' "$SINCE_HASH") as baseline." >&2
+    else
+        # Not a ref — treat as a date expression (git --after handles many formats)
+        SINCE_DATE="$SINCE_REF"
+        echo "Using commits after '$SINCE_DATE'." >&2
+        # Find the last commit at or before the date to use as baseline
+        SINCE_HASH=$(git log --format='%H' -1 \
+            --before="$SINCE_DATE" \
+            ${FIRST_PARENT:+"$FIRST_PARENT"} HEAD 2>/dev/null) || true
+    fi
 fi
 
 GIT_RANGE="HEAD"
-[[ -n "$SINCE_HASH" ]] && GIT_RANGE="${SINCE_HASH}..HEAD"
+[[ -n "$SINCE_HASH" && -z "$SINCE_DATE" ]] && GIT_RANGE="${SINCE_HASH}..HEAD"
 
 git_log_args=(log --format='%H' --reverse)
 [[ -n "$FIRST_PARENT" ]] && git_log_args+=("$FIRST_PARENT")
 [[ -n "$MAX_COMMITS" ]]  && git_log_args+=("-n" "$MAX_COMMITS")
+[[ -n "$SINCE_DATE" ]]   && git_log_args+=("--after=$SINCE_DATE")
 git_log_args+=("$GIT_RANGE")
 
 commits=()
@@ -130,6 +142,7 @@ if [[ "$SUMMARIZE" != "commit" ]]; then
     period_log_args=(log --format='%ad' --date=format:"$pfmt" --reverse)
     [[ -n "$FIRST_PARENT" ]] && period_log_args+=("$FIRST_PARENT")
     [[ -n "$MAX_COMMITS" ]]  && period_log_args+=("-n" "$MAX_COMMITS")
+    [[ -n "$SINCE_DATE" ]]   && period_log_args+=("--after=$SINCE_DATE")
     period_log_args+=("$GIT_RANGE")
 
     periods=()
