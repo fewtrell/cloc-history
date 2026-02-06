@@ -10,6 +10,7 @@ Usage: cloc-history.sh [OPTIONS] [-- CLOC_OPTIONS...]
 
 Track lines of code (via cloc) for every commit in a git repository's history.
 Commits are shown in chronological order with deltas between each row.
+If the working tree has uncommitted changes, it is included as the final row.
 
 Options:
   -h, --help              Show this help message
@@ -65,11 +66,6 @@ fi
 # ---------------------------------------------------------------------------
 if ! git rev-parse --is-inside-work-tree &>/dev/null; then
     echo "Error: not inside a git repository." >&2
-    exit 1
-fi
-
-if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-    echo "Error: repository has uncommitted changes. Commit or stash them first." >&2
     exit 1
 fi
 
@@ -198,6 +194,33 @@ for i in "${!commits[@]}"; do
     printf '\r  [%d/%d] %s  %s' "$processed" "$to_process" "$short" "$day" >&2
 done
 
+# ---------------------------------------------------------------------------
+# If there are uncommitted changes, add the working tree as the final point.
+# This captures work-in-progress that hasn't been committed yet.
+# ---------------------------------------------------------------------------
+if ! git -C "$REPO_ROOT" diff --quiet 2>/dev/null \
+   || ! git -C "$REPO_ROOT" diff --cached --quiet 2>/dev/null; then
+
+    printf '\r  cloc on working tree...' >&2
+
+    today=$(date '+%Y-%m-%d')
+    today_week=$(date '+%G-W%V')
+    today_month=$(date '+%Y-%m')
+    today_year=$(date '+%Y')
+
+    code=$(
+        cd "$REPO_ROOT" \
+        && cloc --vcs=git --csv ${CLOC_OPTS[@]+"${CLOC_OPTS[@]}"} 2>/dev/null \
+        |  awk -F, '$2 == "SUM" { print $5 }'
+    ) || true
+    code=$(echo "$code" | tr -d '[:space:]')
+    code=${code:-0}
+
+    delta=$((code - prev_code))
+
+    results+=("working|${today}|${today_week}|${today_month}|${today_year}|${code}|${delta}|(uncommitted changes)")
+fi
+
 printf '\r%-60s\r' '' >&2
 echo "Done." >&2
 echo "" >&2
@@ -222,6 +245,7 @@ emit_grouped() {
     printf '%-12s  %10s  %10s\n' "------------" "----------" "----------"
 
     local prev_group="" group_code=0 last_before=0
+    local num_periods=0 total_delta=0
 
     for r in "${results[@]}"; do
         IFS='|' read -r hash day week month year code delta subject <<< "$r"
@@ -237,6 +261,8 @@ emit_grouped() {
         if [[ "$key" != "$prev_group" && -n "$prev_group" ]]; then
             local d=$((group_code - last_before))
             printf '%-12s  %10s  %10s\n' "$prev_group" "$group_code" "$(format_delta "$d")"
+            ((total_delta += d))
+            ((num_periods += 1))
             last_before=$group_code
         fi
 
@@ -248,6 +274,15 @@ emit_grouped() {
     if [[ -n "$prev_group" ]]; then
         local d=$((group_code - last_before))
         printf '%-12s  %10s  %10s\n' "$prev_group" "$group_code" "$(format_delta "$d")"
+        ((total_delta += d))
+        ((num_periods += 1))
+    fi
+
+    # Average delta per period
+    if [[ $num_periods -gt 0 ]]; then
+        local avg=$((total_delta / num_periods))
+        printf '%-12s  %10s  %10s\n' "------------" "----------" "----------"
+        printf '%-12s  %10s  %10s\n' "avg/$field" "" "$(format_delta "$avg")"
     fi
 }
 
