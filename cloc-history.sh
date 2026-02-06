@@ -17,6 +17,7 @@ Options:
   -s, --summarize MODE    Group results: "commit" (default), "day", "week",
                           "month", or "year"
   -n, --max-commits N     Process only the last N commits
+  --since COMMIT          Only process commits after COMMIT (tag, hash, etc.)
   --all-parents           Follow all parents at merges (default: first-parent only)
 
 Everything after -- is passed directly to cloc. Use this to filter languages,
@@ -26,6 +27,7 @@ Examples:
   cloc-history.sh
   cloc-history.sh -s day
   cloc-history.sh -s week -n 200
+  cloc-history.sh --since v1.0 -s month
   cloc-history.sh -- --exclude-dir=vendor,node_modules
   cloc-history.sh -- --include-lang=Python,JavaScript
   cloc-history.sh -s month
@@ -41,6 +43,7 @@ USAGE
 SUMMARIZE="commit"
 MAX_COMMITS=""
 FIRST_PARENT="--first-parent"
+SINCE_REF=""
 CLOC_OPTS=()
 
 while [[ $# -gt 0 ]]; do
@@ -48,6 +51,7 @@ while [[ $# -gt 0 ]]; do
         -h|--help)        usage ;;
         -s|--summarize)   SUMMARIZE="$2"; shift 2 ;;
         -n|--max-commits) MAX_COMMITS="$2"; shift 2 ;;
+        --since)          SINCE_REF="$2"; shift 2 ;;
         --all-parents)    FIRST_PARENT=""; shift ;;
         --)               shift; CLOC_OPTS=("$@"); break ;;
         *)                echo "Error: unknown option: $1" >&2
@@ -79,10 +83,22 @@ fi
 # ---------------------------------------------------------------------------
 REPO_ROOT=$(git rev-parse --show-toplevel)
 
+# Resolve --since to a full hash (supports tags, short hashes, branch names, etc.)
+SINCE_HASH=""
+if [[ -n "$SINCE_REF" ]]; then
+    SINCE_HASH=$(git rev-parse --verify "$SINCE_REF" 2>/dev/null) || {
+        echo "Error: cannot resolve --since ref '$SINCE_REF'" >&2
+        exit 1
+    }
+fi
+
+GIT_RANGE="HEAD"
+[[ -n "$SINCE_HASH" ]] && GIT_RANGE="${SINCE_HASH}..HEAD"
+
 git_log_args=(log --format='%H' --reverse)
 [[ -n "$FIRST_PARENT" ]] && git_log_args+=("$FIRST_PARENT")
 [[ -n "$MAX_COMMITS" ]]  && git_log_args+=("-n" "$MAX_COMMITS")
-git_log_args+=("HEAD")
+git_log_args+=("$GIT_RANGE")
 
 commits=()
 while IFS= read -r hash; do
@@ -114,7 +130,7 @@ if [[ "$SUMMARIZE" != "commit" ]]; then
     period_log_args=(log --format='%ad' --date=format:"$pfmt" --reverse)
     [[ -n "$FIRST_PARENT" ]] && period_log_args+=("$FIRST_PARENT")
     [[ -n "$MAX_COMMITS" ]]  && period_log_args+=("-n" "$MAX_COMMITS")
-    period_log_args+=("HEAD")
+    period_log_args+=("$GIT_RANGE")
 
     periods=()
     while IFS= read -r p; do
@@ -149,11 +165,30 @@ trap cleanup EXIT
 git -C "$REPO_ROOT" worktree add --quiet --detach "$WORK_DIR" HEAD
 
 # ---------------------------------------------------------------------------
-# Process each commit
+# If --since was given, run cloc on that commit to establish the baseline.
 # ---------------------------------------------------------------------------
 prev_code=0
 results=()
 processed=0
+
+if [[ -n "$SINCE_HASH" ]]; then
+    printf '\r  baseline: cloc on %s...' "$(git log -1 --format='%h' "$SINCE_HASH")" >&2
+    git -C "$WORK_DIR" checkout --quiet --force "$SINCE_HASH" 2>/dev/null
+
+    baseline=$(
+        cd "$WORK_DIR" \
+        && cloc --vcs=git --csv ${CLOC_OPTS[@]+"${CLOC_OPTS[@]}"} 2>/dev/null \
+        |  awk -F, '$2 == "SUM" { print $5 }'
+    ) || true
+    baseline=$(echo "$baseline" | tr -d '[:space:]')
+    baseline=${baseline:-0}
+
+    prev_code=$baseline
+fi
+
+# ---------------------------------------------------------------------------
+# Process each commit
+# ---------------------------------------------------------------------------
 
 for i in "${!commits[@]}"; do
     commit="${commits[$i]}"
@@ -278,11 +313,12 @@ emit_grouped() {
         ((num_periods += 1))
     fi
 
-    # Average delta per period
+    # Summary footer
     if [[ $num_periods -gt 0 ]]; then
         local avg=$((total_delta / num_periods))
         printf '%-12s  %10s  %10s\n' "------------" "----------" "----------"
-        printf '%-12s  %10s  %10s\n' "avg/$field" "" "$(format_delta "$avg")"
+        printf '%-12s  %10s  %10s\n' "total"      "" "$(format_delta "$total_delta")"
+        printf '%-12s  %10s  %10s\n' "avg/$field"  "" "$(format_delta "$avg")"
     fi
 }
 
@@ -297,11 +333,24 @@ case "$SUMMARIZE" in
             "----------" "------------" "----------" "----------" \
             "------------------------------------------------------------"
 
+        total_delta=0
         for r in "${results[@]}"; do
             IFS='|' read -r hash day week month year code delta subject <<< "$r"
             printf '%-10s  %-12s  %10s  %10s  %.60s\n' \
                 "$hash" "$day" "$code" "$(format_delta "$delta")" "$subject"
+            ((total_delta += delta))
         done
+
+        num=${#results[@]}
+        if [[ $num -gt 0 ]]; then
+            avg=$((total_delta / num))
+            printf '%-10s  %-12s  %10s  %10s\n' \
+                "----------" "------------" "----------" "----------"
+            printf '%-10s  %-12s  %10s  %10s\n' \
+                "total" "" "" "$(format_delta "$total_delta")"
+            printf '%-10s  %-12s  %10s  %10s\n' \
+                "avg/commit" "" "" "$(format_delta "$avg")"
+        fi
         ;;
     day)   emit_grouped "Date"  day   ;;
     week)  emit_grouped "Week"  week  ;;
