@@ -87,24 +87,42 @@ fi
 REPO_ROOT=$(git rev-parse --show-toplevel)
 
 # Resolve --since: try as a commit ref first, fall back to date.
-SINCE_HASH=""
+BASELINE_HASH=""
 SINCE_DATE=""
+GIT_RANGE="HEAD"
 if [[ -n "$SINCE_REF" ]]; then
-    if SINCE_HASH=$(git rev-parse --verify "$SINCE_REF" 2>/dev/null); then
-        echo "Using commit $(git log -1 --format='%h  %s' "$SINCE_HASH") as baseline." >&2
+    if START_HASH=$(git rev-parse --verify "$SINCE_REF" 2>/dev/null); then
+        # It's a commit ref - use its parent as baseline, include the commit itself
+        echo "Showing commits from $(git log -1 --format='%h  %s' "$START_HASH") onwards." >&2
+
+        # Try to get the parent commit for baseline
+        if BASELINE_HASH=$(git rev-parse --verify "${START_HASH}^" 2>/dev/null); then
+            echo "Baseline: $(git log -1 --format='%h  %s' "$BASELINE_HASH")" >&2
+            GIT_RANGE="${BASELINE_HASH}..HEAD"
+        else
+            # No parent commit (this is the first commit in the repo)
+            echo "Warning: No parent commit found (this is the first commit)." >&2
+            echo "The first delta will be relative to an empty repository (baseline = 0)." >&2
+            BASELINE_HASH=""
+            GIT_RANGE="HEAD"
+        fi
     else
         # Not a ref — treat as a date expression (git --after handles many formats)
         SINCE_DATE="$SINCE_REF"
         echo "Using commits after '$SINCE_DATE'." >&2
         # Find the last commit at or before the date to use as baseline
-        SINCE_HASH=$(git log --format='%H' -1 \
-            --before="$SINCE_DATE" \
-            ${FIRST_PARENT:+"$FIRST_PARENT"} HEAD 2>/dev/null) || true
+        # Don't use FIRST_PARENT here - we want the actual code state before the date
+        BASELINE_HASH=$(git log --format='%H' -1 \
+            --before="$SINCE_DATE" HEAD 2>/dev/null) || true
+
+        # If no commit found before the date, try the first commit in the filtered range
+        if [[ -z "$BASELINE_HASH" ]]; then
+            echo "Warning: No commits found before '$SINCE_DATE'." >&2
+            echo "The first delta will be relative to an empty repository (baseline = 0)." >&2
+        fi
+        GIT_RANGE="HEAD"
     fi
 fi
-
-GIT_RANGE="HEAD"
-[[ -n "$SINCE_HASH" && -z "$SINCE_DATE" ]] && GIT_RANGE="${SINCE_HASH}..HEAD"
 
 git_log_args=(log --format='%H' --reverse)
 [[ -n "$FIRST_PARENT" ]] && git_log_args+=("$FIRST_PARENT")
@@ -181,12 +199,13 @@ git -C "$REPO_ROOT" worktree add --quiet --detach "$WORK_DIR" HEAD
 # If --since was given, run cloc on that commit to establish the baseline.
 # ---------------------------------------------------------------------------
 prev_code=0
+baseline_code=0
 results=()
 processed=0
 
-if [[ -n "$SINCE_HASH" ]]; then
-    printf '\r  baseline: cloc on %s...' "$(git log -1 --format='%h' "$SINCE_HASH")" >&2
-    git -C "$WORK_DIR" checkout --quiet --force "$SINCE_HASH" 2>/dev/null
+if [[ -n "$BASELINE_HASH" ]]; then
+    printf '\r  baseline: cloc on %s...' "$(git log -1 --format='%h' "$BASELINE_HASH")" >&2
+    git -C "$WORK_DIR" checkout --quiet --force "$BASELINE_HASH" 2>/dev/null
 
     baseline=$(
         cd "$WORK_DIR" \
@@ -197,6 +216,7 @@ if [[ -n "$SINCE_HASH" ]]; then
     baseline=${baseline:-0}
 
     prev_code=$baseline
+    baseline_code=$baseline
 fi
 
 # ---------------------------------------------------------------------------
@@ -286,14 +306,16 @@ format_delta() {
 # Emit a grouped table. Uses the latest commit in each period for that row's stats.
 #   $1 = column header ("Date", "Week", "Month", or "Year")
 #   $2 = field name:  "day", "week", "month", or "year"
+#   $3 = baseline code count from before the --since cutoff
 emit_grouped() {
-    local header=$1 field=$2
+    local header=$1 field=$2 baseline=$3
 
     printf '%-12s  %10s  %10s\n' "$header" "Code" "Delta"
     printf '%-12s  %10s  %10s\n' "------------" "----------" "----------"
 
-    local prev_group="" group_code=0 last_before=0
+    local prev_group="" group_code=0 last_before=$baseline
     local num_periods=0 total_delta=0
+    local -a deltas=()
 
     for r in "${results[@]}"; do
         IFS='|' read -r hash day week month year code delta subject <<< "$r"
@@ -311,6 +333,7 @@ emit_grouped() {
             printf '%-12s  %10s  %10s\n' "$prev_group" "$group_code" "$(format_delta "$d")"
             ((total_delta += d))
             ((num_periods += 1))
+            deltas+=("$d")
             last_before=$group_code
         fi
 
@@ -324,14 +347,28 @@ emit_grouped() {
         printf '%-12s  %10s  %10s\n' "$prev_group" "$group_code" "$(format_delta "$d")"
         ((total_delta += d))
         ((num_periods += 1))
+        deltas+=("$d")
     fi
 
     # Summary footer
     if [[ $num_periods -gt 0 ]]; then
         local avg=$((total_delta / num_periods))
+
+        # Calculate median
+        IFS=$'\n' sorted=($(sort -n <<<"${deltas[*]}"))
+        local median
+        if [[ $((num_periods % 2)) -eq 1 ]]; then
+            median=${sorted[$((num_periods / 2))]}
+        else
+            local mid1=${sorted[$((num_periods / 2 - 1))]}
+            local mid2=${sorted[$((num_periods / 2))]}
+            median=$(( (mid1 + mid2) / 2 ))
+        fi
+
         printf '%-12s  %10s  %10s\n' "------------" "----------" "----------"
-        printf '%-12s  %10s  %10s\n' "total"      "" "$(format_delta "$total_delta")"
+        printf '%-12s  %10s  %10s\n' "total"       "" "$(format_delta "$total_delta")"
         printf '%-12s  %10s  %10s\n' "avg/$field"  "" "$(format_delta "$avg")"
+        printf '%-12s  %10s  %10s\n' "median/$field" "" "$(format_delta "$median")"
     fi
 }
 
@@ -347,26 +384,42 @@ case "$SUMMARIZE" in
             "------------------------------------------------------------"
 
         total_delta=0
+        deltas=()
         for r in "${results[@]}"; do
             IFS='|' read -r hash day week month year code delta subject <<< "$r"
             printf '%-10s  %-12s  %10s  %10s  %.60s\n' \
                 "$hash" "$day" "$code" "$(format_delta "$delta")" "$subject"
             ((total_delta += delta))
+            deltas+=("$delta")
         done
 
         num=${#results[@]}
         if [[ $num -gt 0 ]]; then
             avg=$((total_delta / num))
+
+            # Calculate median
+            IFS=$'\n' sorted=($(sort -n <<<"${deltas[*]}"))
+            median=0
+            if [[ $((num % 2)) -eq 1 ]]; then
+                median=${sorted[$((num / 2))]}
+            else
+                mid1=${sorted[$((num / 2 - 1))]}
+                mid2=${sorted[$((num / 2))]}
+                median=$(( (mid1 + mid2) / 2 ))
+            fi
+
             printf '%-10s  %-12s  %10s  %10s\n' \
                 "----------" "------------" "----------" "----------"
             printf '%-10s  %-12s  %10s  %10s\n' \
                 "total" "" "" "$(format_delta "$total_delta")"
             printf '%-10s  %-12s  %10s  %10s\n' \
                 "avg/commit" "" "" "$(format_delta "$avg")"
+            printf '%-10s  %-12s  %10s  %10s\n' \
+                "median/commit" "" "" "$(format_delta "$median")"
         fi
         ;;
-    day)   emit_grouped "Date"  day   ;;
-    week)  emit_grouped "Week"  week  ;;
-    month) emit_grouped "Month" month ;;
-    year)  emit_grouped "Year"  year  ;;
+    day)   emit_grouped "Date"  day   "$baseline_code" ;;
+    week)  emit_grouped "Week"  week  "$baseline_code" ;;
+    month) emit_grouped "Month" month "$baseline_code" ;;
+    year)  emit_grouped "Year"  year  "$baseline_code" ;;
 esac
