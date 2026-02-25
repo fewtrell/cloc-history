@@ -20,6 +20,8 @@ Options:
   --since REF|DATE        Only process commits after a commit (tag, hash, branch)
                           or after a date (e.g. "2024-06-01", "3 months ago")
   --all-parents           Follow all parents at merges (default: first-parent only)
+  --fill-gaps             When using -s day/week/month/year, emit a row for every
+                          period in the range, even if no commits were made
 
 Everything after -- is passed directly to cloc. Use this to filter languages,
 exclude directories, etc.
@@ -28,6 +30,7 @@ Examples:
   cloc-history.sh
   cloc-history.sh -s day
   cloc-history.sh -s week -n 200
+  cloc-history.sh -s week --fill-gaps
   cloc-history.sh --since v1.0 -s month
   cloc-history.sh --since 2024-06-01
   cloc-history.sh --since "3 months ago" -s week
@@ -47,6 +50,7 @@ SUMMARIZE="commit"
 MAX_COMMITS=""
 FIRST_PARENT="--first-parent"
 SINCE_REF=""
+FILL_GAPS=0
 CLOC_OPTS=()
 
 while [[ $# -gt 0 ]]; do
@@ -56,6 +60,7 @@ while [[ $# -gt 0 ]]; do
         -n|--max-commits) MAX_COMMITS="$2"; shift 2 ;;
         --since)          SINCE_REF="$2"; shift 2 ;;
         --all-parents)    FIRST_PARENT=""; shift ;;
+        --fill-gaps)      FILL_GAPS=1; shift ;;
         --)               shift; CLOC_OPTS=("$@"); break ;;
         *)                echo "Error: unknown option: $1" >&2
                           echo "Use -h for help." >&2
@@ -206,6 +211,31 @@ format_delta() {
     fi
 }
 
+# Advance a period key by one unit (used by --fill-gaps).
+# Key formats: day=YYYY-MM-DD, week=YYYYMMDD, month=YYYY-MM, year=YYYY
+next_period() {
+    local field=$1 key=$2
+    local result
+    case "$field" in
+        day)
+            result=$(date -j -v+1d -f "%Y-%m-%d" "$key" "+%Y-%m-%d" 2>/dev/null) \
+                || result=$(date -d "$key + 1 day" "+%Y-%m-%d")
+            ;;
+        week)
+            result=$(date -j -v+7d -f "%Y%m%d" "$key" "+%Y%m%d" 2>/dev/null) \
+                || result=$(date -d "${key:0:4}-${key:4:2}-${key:6:2} + 7 days" "+%Y%m%d")
+            ;;
+        month)
+            result=$(date -j -v+1m -f "%Y-%m-01" "${key}-01" "+%Y-%m" 2>/dev/null) \
+                || result=$(date -d "${key}-01 + 1 month" "+%Y-%m")
+            ;;
+        year)
+            result=$((key + 1))
+            ;;
+    esac
+    echo "$result"
+}
+
 # ---------------------------------------------------------------------------
 # Temporary worktree (cleaned up on exit)
 # ---------------------------------------------------------------------------
@@ -349,6 +379,17 @@ emit_grouped() {
             num_periods=$((num_periods + 1))
             deltas+=("$d")
             last_before=$group_code
+            # Fill empty periods between prev_group and key
+            if [[ "$FILL_GAPS" -eq 1 ]]; then
+                local gap
+                gap=$(next_period "$field" "$prev_group")
+                while [[ "$gap" < "$key" ]]; do
+                    printf '%-12s  %10s  %10s\n' "$gap" "$last_before" "0"
+                    num_periods=$((num_periods + 1))
+                    deltas+=(0)
+                    gap=$(next_period "$field" "$gap")
+                done
+            fi
         fi
 
         prev_group="$key"
