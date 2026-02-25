@@ -178,7 +178,7 @@ if [[ "$SUMMARIZE" != "commit" ]]; then
 fi
 
 to_process=0
-for v in "${run_cloc[@]}"; do ((to_process += v)); done
+for v in "${run_cloc[@]}"; do to_process=$((to_process + v)); done
 
 echo "Processing $to_process of $total commits (grouped by $SUMMARIZE)..." >&2
 
@@ -239,7 +239,7 @@ for i in "${!commits[@]}"; do
     # Commit metadata
     short=$(git   log -1 --format='%h'  "$commit")
     day=$(git     log -1 --format='%ad' --date=format:'%Y-%m-%d' "$commit")
-    week=$(git    log -1 --format='%ad' --date=format:'%G-W%V'   "$commit")
+    week=$(week_start_yyyymmdd "$day")
     month=$(git   log -1 --format='%ad' --date=format:'%Y-%m'    "$commit")
     year=$(git    log -1 --format='%ad' --date=format:'%Y'       "$commit")
     subject=$(git log -1 --format='%s'  "$commit")
@@ -272,7 +272,7 @@ if ! git -C "$REPO_ROOT" diff --quiet 2>/dev/null \
     printf '\r  cloc on working tree...' >&2
 
     today=$(date '+%Y-%m-%d')
-    today_week=$(date '+%G-W%V')
+    today_week=$(week_start_yyyymmdd "$today")
     today_month=$(date '+%Y-%m')
     today_year=$(date '+%Y')
 
@@ -296,6 +296,20 @@ echo "" >&2
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# Given YYYY-MM-DD, return YYYYMMDD of the Monday starting that ISO week.
+week_start_yyyymmdd() {
+    local d=$1
+    local dow
+    # BSD date (macOS) vs GNU date (Linux)
+    if dow=$(date -j -f "%Y-%m-%d" "$d" "+%u" 2>/dev/null); then
+        date -j -v-$((dow-1))d -f "%Y-%m-%d" "$d" "+%Y%m%d"
+    else
+        dow=$(date -d "$d" "+%u")
+        date -d "$d - $((dow-1)) days" "+%Y%m%d"
+    fi
+}
+
 format_delta() {
     local d=$1
     if [[ $d -gt 0 ]]; then echo "+${d}"
@@ -331,8 +345,8 @@ emit_grouped() {
         if [[ "$key" != "$prev_group" && -n "$prev_group" ]]; then
             local d=$((group_code - last_before))
             printf '%-12s  %10s  %10s\n' "$prev_group" "$group_code" "$(format_delta "$d")"
-            ((total_delta += d))
-            ((num_periods += 1))
+            total_delta=$((total_delta + d))
+            num_periods=$((num_periods + 1))
             deltas+=("$d")
             last_before=$group_code
         fi
@@ -345,8 +359,8 @@ emit_grouped() {
     if [[ -n "$prev_group" ]]; then
         local d=$((group_code - last_before))
         printf '%-12s  %10s  %10s\n' "$prev_group" "$group_code" "$(format_delta "$d")"
-        ((total_delta += d))
-        ((num_periods += 1))
+        total_delta=$((total_delta + d))
+        num_periods=$((num_periods + 1))
         deltas+=("$d")
     fi
 
@@ -389,7 +403,7 @@ case "$SUMMARIZE" in
             IFS='|' read -r hash day week month year code delta subject <<< "$r"
             printf '%-10s  %-12s  %10s  %10s  %.60s\n' \
                 "$hash" "$day" "$code" "$(format_delta "$delta")" "$subject"
-            ((total_delta += delta))
+            total_delta=$((total_delta + delta))
             deltas+=("$delta")
         done
 
@@ -419,7 +433,7 @@ case "$SUMMARIZE" in
         fi
         ;;
     day)   emit_grouped "Date"  day   "$baseline_code" ;;
-    week)  emit_grouped "Week"  week  "$baseline_code" ;;
+    week)  emit_grouped "week start"  week  "$baseline_code" ;;
     month) emit_grouped "Month" month "$baseline_code" ;;
     year)  emit_grouped "Year"  year  "$baseline_code" ;;
 esac
