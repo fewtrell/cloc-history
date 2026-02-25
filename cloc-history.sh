@@ -183,6 +183,30 @@ for v in "${run_cloc[@]}"; do to_process=$((to_process + v)); done
 echo "Processing $to_process of $total commits (grouped by $SUMMARIZE)..." >&2
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Given YYYY-MM-DD, return YYYYMMDD of the Monday starting that ISO week.
+week_start_yyyymmdd() {
+    local d=$1
+    local dow
+    # BSD date (macOS) vs GNU date (Linux)
+    if dow=$(date -j -f "%Y-%m-%d" "$d" "+%u" 2>/dev/null); then
+        date -j -v-$((dow-1))d -f "%Y-%m-%d" "$d" "+%Y%m%d"
+    else
+        dow=$(date -d "$d" "+%u")
+        date -d "$d - $((dow-1)) days" "+%Y%m%d"
+    fi
+}
+
+format_delta() {
+    local d=$1
+    if [[ $d -gt 0 ]]; then echo "+${d}"
+    else                     echo "${d}"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Temporary worktree (cleaned up on exit)
 # ---------------------------------------------------------------------------
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cloc-history.XXXXXX")
@@ -292,30 +316,6 @@ fi
 printf '\r%-60s\r' '' >&2
 echo "Done." >&2
 echo "" >&2
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-# Given YYYY-MM-DD, return YYYYMMDD of the Monday starting that ISO week.
-week_start_yyyymmdd() {
-    local d=$1
-    local dow
-    # BSD date (macOS) vs GNU date (Linux)
-    if dow=$(date -j -f "%Y-%m-%d" "$d" "+%u" 2>/dev/null); then
-        date -j -v-$((dow-1))d -f "%Y-%m-%d" "$d" "+%Y%m%d"
-    else
-        dow=$(date -d "$d" "+%u")
-        date -d "$d - $((dow-1)) days" "+%Y%m%d"
-    fi
-}
-
-format_delta() {
-    local d=$1
-    if [[ $d -gt 0 ]]; then echo "+${d}"
-    else                     echo "${d}"
-    fi
-}
 
 # Emit a grouped table. Uses the latest commit in each period for that row's stats.
 #   $1 = column header ("Date", "Week", "Month", or "Year")
