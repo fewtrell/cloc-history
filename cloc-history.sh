@@ -17,8 +17,9 @@ Options:
   -s, --summarize MODE    Group results: "commit" (default), "day", "week",
                           "month", or "year"
   -n, --max-commits N     Process only the last N commits
-  --since REF|DATE        Only process commits after a commit (tag, hash, branch)
-                          or after a date (e.g. "2024-06-01", "3 months ago")
+  --since REF|DATE        Only process commits after a commit (tag, hash, branch),
+                          after a date (e.g. "2024-06-01", "3 months ago"),
+                          or a duration ago: Nd (days), Nw (weeks), Nm (months), Nh (hours)
   --all-parents           Follow all parents at merges (default: first-parent only)
   --fill-gaps             When using -s day/week/month/year, emit a row for every
                           period in the range, even if no commits were made
@@ -34,6 +35,10 @@ Examples:
   cloc-history.sh --since v1.0 -s month
   cloc-history.sh --since 2024-06-01
   cloc-history.sh --since "3 months ago" -s week
+  cloc-history.sh --since 5d
+  cloc-history.sh --since 2w -s day
+  cloc-history.sh --since 2m -s week
+  cloc-history.sh --since 48h
   cloc-history.sh -- --exclude-dir=vendor,node_modules
   cloc-history.sh -- --include-lang=Python,JavaScript
   cloc-history.sh -s month
@@ -74,6 +79,52 @@ if [[ ! "$SUMMARIZE" =~ ^(commit|day|week|month|year)$ ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Parse duration format (Nd, Nw, Nm, Nh only) and convert to a date string for git
+# ---------------------------------------------------------------------------
+parse_duration() {
+    local input=$1
+    if [[ "$input" =~ ^([0-9]+)([dwmh])$ ]]; then
+        local num="${BASH_REMATCH[1]}"
+        local unit="${BASH_REMATCH[2]}"
+
+        case "$unit" in
+            h) # hours — include time so git --after is precise
+                if date -j -v-${num}H +"%Y-%m-%d %H:%M:%S" &>/dev/null; then
+                    date -j -v-${num}H +"%Y-%m-%d %H:%M:%S"
+                else
+                    date -d "$num hours ago" +"%Y-%m-%d %H:%M:%S"
+                fi
+                ;;
+            d) # days
+                if date -j -v-${num}d +"%Y-%m-%d" &>/dev/null; then
+                    date -j -v-${num}d +"%Y-%m-%d"
+                else
+                    date -d "$num days ago" +"%Y-%m-%d"
+                fi
+                ;;
+            w) # weeks
+                local days=$((num * 7))
+                if date -j -v-${days}d +"%Y-%m-%d" &>/dev/null; then
+                    date -j -v-${days}d +"%Y-%m-%d"
+                else
+                    date -d "$num weeks ago" +"%Y-%m-%d"
+                fi
+                ;;
+            m) # months
+                if date -j -v-${num}m +"%Y-%m-%d" &>/dev/null; then
+                    date -j -v-${num}m +"%Y-%m-%d"
+                else
+                    date -d "$num months ago" +"%Y-%m-%d"
+                fi
+                ;;
+        esac
+        return 0
+    fi
+    echo "$input"
+    return 1
+}
+
+# ---------------------------------------------------------------------------
 # Validate environment
 # ---------------------------------------------------------------------------
 if ! git rev-parse --is-inside-work-tree &>/dev/null; then
@@ -91,11 +142,16 @@ fi
 # ---------------------------------------------------------------------------
 REPO_ROOT=$(git rev-parse --show-toplevel)
 
-# Resolve --since: try as a commit ref first, fall back to date.
+# Resolve --since: parse duration format first, then try as commit ref, fall back to date.
 BASELINE_HASH=""
 SINCE_DATE=""
 GIT_RANGE="HEAD"
 if [[ -n "$SINCE_REF" ]]; then
+    # Try parsing as duration format (Nd, Nw, Nm, Nh only)
+    if parsed_date=$(parse_duration "$SINCE_REF"); then
+        SINCE_REF="$parsed_date"
+    fi
+    
     if START_HASH=$(git rev-parse --verify "$SINCE_REF" 2>/dev/null); then
         # It's a commit ref - use its parent as baseline, include the commit itself
         echo "Showing commits from $(git log -1 --format='%h  %s' "$START_HASH") onwards." >&2
