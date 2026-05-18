@@ -142,6 +142,11 @@ fi
 # ---------------------------------------------------------------------------
 REPO_ROOT=$(git rev-parse --show-toplevel)
 
+WORKTREE_DIRTY=0
+if [[ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]]; then
+    WORKTREE_DIRTY=1
+fi
+
 # Resolve --since: parse duration format first, then try as commit ref, fall back to date.
 BASELINE_HASH=""
 SINCE_DATE=""
@@ -198,8 +203,12 @@ done < <(git "${git_log_args[@]}")
 
 total=${#commits[@]}
 if [[ $total -eq 0 ]]; then
-    echo "No commits found." >&2
-    exit 1
+    if [[ $WORKTREE_DIRTY -eq 1 ]]; then
+        echo "No commits found, but working tree has uncommitted changes." >&2
+    else
+        echo "No commits found." >&2
+        exit 1
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -241,7 +250,9 @@ fi
 to_process=0
 for v in "${run_cloc[@]}"; do to_process=$((to_process + v)); done
 
-echo "Processing $to_process of $total commits (grouped by $SUMMARIZE)..." >&2
+if [[ $total -gt 0 ]]; then
+    echo "Processing $to_process of $total commits (grouped by $SUMMARIZE)..." >&2
+fi
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -379,7 +390,7 @@ done
 if ! git -C "$REPO_ROOT" diff --quiet 2>/dev/null \
    || ! git -C "$REPO_ROOT" diff --cached --quiet 2>/dev/null; then
 
-    printf '\r  cloc on working tree...' >&2
+    printf '\r%-60s\r  cloc on working tree...' '' >&2
 
     today=$(date '+%Y-%m-%d')
     today_week=$(week_start_yyyymmdd "$today")
