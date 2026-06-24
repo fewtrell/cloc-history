@@ -23,6 +23,8 @@ Options:
   --all-parents           Follow all parents at merges (default: first-parent only)
   --fill-gaps             When using -s day/week/month/year, emit a row for every
                           period in the range, even if no commits were made
+  --committer-date        Order and label rows by committer date (the rebase date)
+                          instead of the default author date (original commit time)
 
 Everything after -- is passed directly to cloc. Use this to filter languages,
 exclude directories, etc.
@@ -56,6 +58,11 @@ MAX_COMMITS=""
 FIRST_PARENT="--first-parent"
 SINCE_REF=""
 FILL_GAPS=0
+# Which git date drives ordering and labels. Default to author date (the original
+# authoring time) so a rebased history reads in the order work was actually done;
+# --committer-date switches to committer date (the rebase time).
+DATE_SORT='%at'   # epoch used to order commits
+DATE_LABEL='%ad'  # formatted date used for row labels / period keys
 CLOC_OPTS=()
 
 while [[ $# -gt 0 ]]; do
@@ -66,6 +73,7 @@ while [[ $# -gt 0 ]]; do
         --since)          SINCE_REF="$2"; shift 2 ;;
         --all-parents)    FIRST_PARENT=""; shift ;;
         --fill-gaps)      FILL_GAPS=1; shift ;;
+        --committer-date) DATE_SORT='%ct'; DATE_LABEL='%cd'; shift ;;
         --)               shift; CLOC_OPTS=("$@"); break ;;
         *)                echo "Error: unknown option: $1" >&2
                           echo "Use -h for help." >&2
@@ -190,16 +198,21 @@ if [[ -n "$SINCE_REF" ]]; then
     fi
 fi
 
-git_log_args=(log --format='%H' --reverse)
+# Emit "<date-epoch> <hash>" so we can order by the chosen date below.
+git_log_args=(log --format="$DATE_SORT %H" --reverse)
 [[ -n "$FIRST_PARENT" ]] && git_log_args+=("$FIRST_PARENT")
 [[ -n "$MAX_COMMITS" ]]  && git_log_args+=("-n" "$MAX_COMMITS")
 [[ -n "$SINCE_DATE" ]]   && git_log_args+=("--after=$SINCE_DATE")
 git_log_args+=("$GIT_RANGE")
 
+# Order commits by the chosen date (author date by default) rather than git's
+# default committer-date/topological order. After a rebase, committer dates all
+# collapse to the rebase time; sorting by author date keeps rows in the order
+# the work was actually done. Stable sort (-s) preserves commit order on ties.
 commits=()
 while IFS= read -r hash; do
     commits+=("$hash")
-done < <(git "${git_log_args[@]}")
+done < <(git "${git_log_args[@]}" | sort -n -s -k1,1 | awk '{print $2}')
 
 total=${#commits[@]}
 if [[ $total -eq 0 ]]; then
@@ -226,8 +239,10 @@ if [[ "$SUMMARIZE" != "commit" ]]; then
         year)  pfmt='%Y'       ;;
     esac
 
-    # Get the period key for every commit in one batch git-log call
-    period_log_args=(log --format='%ad' --date=format:"$pfmt" --reverse)
+    # Get the period key for every commit in one batch git-log call. Emit
+    # "<date-epoch>|<period-key>" and sort by epoch with the same stable ordering
+    # as the commits array above, so the two stay index-aligned.
+    period_log_args=(log --format="$DATE_SORT|$DATE_LABEL" --date=format:"$pfmt" --reverse)
     [[ -n "$FIRST_PARENT" ]] && period_log_args+=("$FIRST_PARENT")
     [[ -n "$MAX_COMMITS" ]]  && period_log_args+=("-n" "$MAX_COMMITS")
     [[ -n "$SINCE_DATE" ]]   && period_log_args+=("--after=$SINCE_DATE")
@@ -236,7 +251,7 @@ if [[ "$SUMMARIZE" != "commit" ]]; then
     periods=()
     while IFS= read -r p; do
         periods+=("$p")
-    done < <(git "${period_log_args[@]}")
+    done < <(git "${period_log_args[@]}" | sort -n -s -t'|' -k1,1 | cut -d'|' -f2)
 
     # Only keep the last commit in each period (skip earlier ones)
     for i in "${!commits[@]}"; do
@@ -359,10 +374,11 @@ for i in "${!commits[@]}"; do
 
     # Commit metadata
     short=$(git   log -1 --format='%h'  "$commit")
-    day=$(git     log -1 --format='%ad' --date=format:'%Y-%m-%d' "$commit")
+    # $DATE_LABEL is author date by default (--committer-date switches to %cd).
+    day=$(git     log -1 --format="$DATE_LABEL" --date=format:'%Y-%m-%d' "$commit")
     week=$(week_start_yyyymmdd "$day")
-    month=$(git   log -1 --format='%ad' --date=format:'%Y-%m'    "$commit")
-    year=$(git    log -1 --format='%ad' --date=format:'%Y'       "$commit")
+    month=$(git   log -1 --format="$DATE_LABEL" --date=format:'%Y-%m'    "$commit")
+    year=$(git    log -1 --format="$DATE_LABEL" --date=format:'%Y'       "$commit")
     subject=$(git log -1 --format='%s'  "$commit")
 
     # Count code lines (only git-tracked files)
