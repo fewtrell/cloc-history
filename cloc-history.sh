@@ -133,6 +133,33 @@ parse_duration() {
 }
 
 # ---------------------------------------------------------------------------
+# Convert a date string to a Unix epoch (start-of-day for bare dates), so we can
+# compare it against each commit's chosen date (author date by default). git's
+# --after filters on committer date, but we order/label by author date, so a
+# rebased commit (recent committer date, old author date) slips past --after and
+# shows up before the requested window. This epoch lets us filter it out.
+# Emits the epoch on success; returns 1 (no output) if the date can't be parsed.
+# ---------------------------------------------------------------------------
+to_epoch() {
+    local input=$1
+    # Bare YYYY-MM-DD → start of that day (matches git's --after semantics)
+    if [[ "$input" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+        date -j -f "%Y-%m-%d %H:%M:%S" "$input 00:00:00" "+%s" 2>/dev/null && return 0
+        date -d "$input 00:00:00" "+%s" 2>/dev/null && return 0
+        return 1
+    fi
+    # YYYY-MM-DD HH:MM:SS (e.g. from the Nh duration shorthand)
+    if [[ "$input" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
+        date -j -f "%Y-%m-%d %H:%M:%S" "$input" "+%s" 2>/dev/null && return 0
+        date -d "$input" "+%s" 2>/dev/null && return 0
+        return 1
+    fi
+    # Anything else (relative expressions like "3 months ago") — GNU date only
+    date -d "$input" "+%s" 2>/dev/null && return 0
+    return 1
+}
+
+# ---------------------------------------------------------------------------
 # Validate environment
 # ---------------------------------------------------------------------------
 if ! git rev-parse --is-inside-work-tree &>/dev/null; then
@@ -158,6 +185,7 @@ fi
 # Resolve --since: parse duration format first, then try as commit ref, fall back to date.
 BASELINE_HASH=""
 SINCE_DATE=""
+CUTOFF_EPOCH=""
 GIT_RANGE="HEAD"
 if [[ -n "$SINCE_REF" ]]; then
     # Try parsing as duration format (Nd, Nw, Nm, Nh only)
@@ -184,6 +212,17 @@ if [[ -n "$SINCE_REF" ]]; then
         # Not a ref — treat as a date expression (git --after handles many formats)
         SINCE_DATE="$SINCE_REF"
         echo "Using commits after '$SINCE_DATE'." >&2
+
+        # Also derive an epoch cutoff so we can drop commits whose chosen date
+        # (author date by default) is before the window. git's --after only
+        # filters committer date, which lets rebased-in older work slip through.
+        if CUTOFF_EPOCH=$(to_epoch "$SINCE_DATE"); then
+            :
+        else
+            CUTOFF_EPOCH=""
+            echo "Warning: could not parse '$SINCE_DATE' to an epoch; rows may include" >&2
+            echo "         commits authored before the window if history was rebased." >&2
+        fi
         # Find the last commit at or before the date to use as baseline
         # Don't use FIRST_PARENT here - we want the actual code state before the date
         BASELINE_HASH=$(git log --format='%H' -1 \
@@ -212,7 +251,8 @@ git_log_args+=("$GIT_RANGE")
 commits=()
 while IFS= read -r hash; do
     commits+=("$hash")
-done < <(git "${git_log_args[@]}" | sort -n -s -k1,1 | awk '{print $2}')
+done < <(git "${git_log_args[@]}" | sort -n -s -k1,1 \
+         | awk -v c="${CUTOFF_EPOCH:-0}" '$1 >= c {print $2}')
 
 total=${#commits[@]}
 if [[ $total -eq 0 ]]; then
@@ -251,7 +291,8 @@ if [[ "$SUMMARIZE" != "commit" ]]; then
     periods=()
     while IFS= read -r p; do
         periods+=("$p")
-    done < <(git "${period_log_args[@]}" | sort -n -s -t'|' -k1,1 | cut -d'|' -f2)
+    done < <(git "${period_log_args[@]}" | sort -n -s -t'|' -k1,1 \
+             | awk -F'|' -v c="${CUTOFF_EPOCH:-0}" '$1 >= c {print $2}')
 
     # Only keep the last commit in each period (skip earlier ones)
     for i in "${!commits[@]}"; do
