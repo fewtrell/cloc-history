@@ -223,10 +223,26 @@ if [[ -n "$SINCE_REF" ]]; then
             echo "Warning: could not parse '$SINCE_DATE' to an epoch; rows may include" >&2
             echo "         commits authored before the window if history was rebased." >&2
         fi
-        # Find the last commit at or before the date to use as baseline
-        # Don't use FIRST_PARENT here - we want the actual code state before the date
-        BASELINE_HASH=$(git log --format='%H' -1 \
-            --before="$SINCE_DATE" HEAD 2>/dev/null) || true
+        # Baseline = the code state at the window's opening boundary: the last
+        # commit *authored* before the cutoff. Use the same date notion
+        # ($DATE_SORT — author date by default, committer date under
+        # --committer-date) and the same parent traversal as every other row, so
+        # a rebased history (where committer dates differ from author dates)
+        # can't land on a stale baseline. git's committer-date --before would
+        # skip over commits authored before the window but rebased in later,
+        # inflating the first day's delta. Fall back to --before only when we
+        # couldn't derive an epoch cutoff.
+        if [[ -n "$CUTOFF_EPOCH" ]]; then
+            baseline_log_args=(log --format="$DATE_SORT %H")
+            [[ -n "$FIRST_PARENT" ]] && baseline_log_args+=("$FIRST_PARENT")
+            baseline_log_args+=(HEAD)
+            BASELINE_HASH=$(git "${baseline_log_args[@]}" 2>/dev/null \
+                | sort -n -s -k1,1 \
+                | awk -v c="$CUTOFF_EPOCH" '$1 < c { h = $2 } END { if (h != "") print h }') || true
+        else
+            BASELINE_HASH=$(git log --format='%H' -1 \
+                --before="$SINCE_DATE" HEAD 2>/dev/null) || true
+        fi
 
         # If no commit found before the date, try the first commit in the filtered range
         if [[ -z "$BASELINE_HASH" ]]; then
