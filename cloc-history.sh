@@ -41,6 +41,7 @@ Examples:
   cloc-history.sh --since 2w -s day
   cloc-history.sh --since 2m -s week
   cloc-history.sh --since 48h
+  cloc-history.sh -- --exclude-ext=csv
   cloc-history.sh -- --exclude-dir=vendor,node_modules
   cloc-history.sh -- --include-lang=Python,JavaScript
   cloc-history.sh -s month
