@@ -25,6 +25,8 @@ Options:
                           period in the range, even if no commits were made
   --committer-date        Order and label rows by committer date (the rebase date)
                           instead of the default author date (original commit time)
+  --cache                 Cache per-commit counts in .cloc-history.cache at the repo
+                          root so later runs skip already-counted commits (off by default)
 
 Everything after -- is passed directly to cloc. Use this to filter languages,
 exclude directories, etc.
@@ -47,6 +49,7 @@ Examples:
   cloc-history.sh -s month
   cloc-history.sh -s year
   cloc-history.sh -s day -- --exclude-ext=json,yaml
+  cloc-history.sh --cache -s week
 USAGE
     exit 0
 }
@@ -64,6 +67,7 @@ FILL_GAPS=0
 # --committer-date switches to committer date (the rebase time).
 DATE_SORT='%at'   # epoch used to order commits
 DATE_LABEL='%ad'  # formatted date used for row labels / period keys
+USE_CACHE=0
 CLOC_OPTS=()
 
 while [[ $# -gt 0 ]]; do
@@ -75,6 +79,7 @@ while [[ $# -gt 0 ]]; do
         --all-parents)    FIRST_PARENT=""; shift ;;
         --fill-gaps)      FILL_GAPS=1; shift ;;
         --committer-date) DATE_SORT='%ct'; DATE_LABEL='%cd'; shift ;;
+        --cache)          USE_CACHE=1; shift ;;
         --)               shift; CLOC_OPTS=("$@"); break ;;
         *)                echo "Error: unknown option: $1" >&2
                           echo "Use -h for help." >&2
@@ -177,6 +182,15 @@ fi
 # Gather commits (oldest first)
 # ---------------------------------------------------------------------------
 REPO_ROOT=$(git rev-parse --show-toplevel)
+
+# Optional cache of per-commit counts. Entries are "<commit> <opts-key> <code>";
+# the opts-key fingerprints the cloc options so runs with different filters
+# don't share counts.
+CACHE_FILE="$REPO_ROOT/.cloc-history.cache"
+CACHE_OPTS_KEY=""
+if [[ $USE_CACHE -eq 1 ]]; then
+    CACHE_OPTS_KEY=$(printf '%s\n' ${CLOC_OPTS[@]+"${CLOC_OPTS[@]}"} | git hash-object --stdin)
+fi
 
 WORKTREE_DIRTY=0
 if [[ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]]; then
@@ -351,6 +365,39 @@ format_delta() {
     fi
 }
 
+# Count code lines for a commit, consulting/updating the cache when enabled.
+# Sets COUNT to the code count and COUNT_CACHED to 1 on a cache hit, 0 otherwise.
+# (Sets globals rather than echoing so it can run outside a subshell.)
+count_commit() {
+    local hash=$1 code=""
+    COUNT_CACHED=0
+    if [[ $USE_CACHE -eq 1 && -f "$CACHE_FILE" ]]; then
+        code=$(awk -v h="$hash" -v o="$CACHE_OPTS_KEY" \
+            '$1 == h && $2 == o { v = $3 } END { if (v != "") print v }' "$CACHE_FILE")
+        if [[ -n "$code" ]]; then
+            COUNT=$code
+            COUNT_CACHED=1
+            return
+        fi
+    fi
+
+    git -C "$WORK_DIR" checkout --quiet --force "$hash" 2>/dev/null
+
+    # Count code lines (only git-tracked files)
+    code=$(
+        cd "$WORK_DIR" \
+        && cloc --vcs=git --csv ${CLOC_OPTS[@]+"${CLOC_OPTS[@]}"} 2>/dev/null \
+        |  awk -F, '$2 == "SUM" { print $5 }'
+    ) || true
+    code=$(echo "$code" | tr -d '[:space:]')
+
+    # Only persist real results, not a 0 from a failed/empty cloc run
+    if [[ $USE_CACHE -eq 1 && -n "$code" ]]; then
+        printf '%s %s %s\n' "$hash" "$CACHE_OPTS_KEY" "$code" >> "$CACHE_FILE"
+    fi
+    COUNT=${code:-0}
+}
+
 # Advance a period key by one unit (used by --fill-gaps).
 # Key formats: day=YYYY-MM-DD, week=YYYYMMDD, month=YYYY-MM, year=YYYY
 next_period() {
@@ -396,18 +443,13 @@ prev_code=0
 baseline_code=0
 results=()
 processed=0
+cache_hits=0
 
 if [[ -n "$BASELINE_HASH" ]]; then
     printf '\r  baseline: cloc on %s...' "$(git log -1 --format='%h' "$BASELINE_HASH")" >&2
-    git -C "$WORK_DIR" checkout --quiet --force "$BASELINE_HASH" 2>/dev/null
-
-    baseline=$(
-        cd "$WORK_DIR" \
-        && cloc --vcs=git --csv ${CLOC_OPTS[@]+"${CLOC_OPTS[@]}"} 2>/dev/null \
-        |  awk -F, '$2 == "SUM" { print $5 }'
-    ) || true
-    baseline=$(echo "$baseline" | tr -d '[:space:]')
-    baseline=${baseline:-0}
+    count_commit "$BASELINE_HASH"
+    baseline=$COUNT
+    cache_hits=$((cache_hits + COUNT_CACHED))
 
     prev_code=$baseline
     baseline_code=$baseline
@@ -428,7 +470,6 @@ for i in "${!commits[@]}"; do
     fi
 
     ((processed += 1))
-    git -C "$WORK_DIR" checkout --quiet --force "$commit" 2>/dev/null
 
     # Commit metadata
     short=$(git   log -1 --format='%h'  "$commit")
@@ -439,14 +480,9 @@ for i in "${!commits[@]}"; do
     year=$(git    log -1 --format="$DATE_LABEL" --date=format:'%Y'       "$commit")
     subject=$(git log -1 --format='%s'  "$commit")
 
-    # Count code lines (only git-tracked files)
-    code=$(
-        cd "$WORK_DIR" \
-        && cloc --vcs=git --csv ${CLOC_OPTS[@]+"${CLOC_OPTS[@]}"} 2>/dev/null \
-        |  awk -F, '$2 == "SUM" { print $5 }'
-    ) || true
-    code=$(echo "$code" | tr -d '[:space:]')
-    code=${code:-0}
+    count_commit "$commit"
+    code=$COUNT
+    cache_hits=$((cache_hits + COUNT_CACHED))
 
     delta=$((code - prev_code))
     prev_code=$code
@@ -485,7 +521,11 @@ if ! git -C "$REPO_ROOT" diff --quiet 2>/dev/null \
 fi
 
 printf '\r%-60s\r' '' >&2
-echo "Done." >&2
+if [[ $USE_CACHE -eq 1 ]]; then
+    echo "Done. ($cache_hits from cache)" >&2
+else
+    echo "Done." >&2
+fi
 echo "" >&2
 
 # Emit a grouped table. Uses the latest commit in each period for that row's stats.

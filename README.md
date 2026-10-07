@@ -44,6 +44,8 @@ Options:
                           "month", or "year"
   -n, --max-commits N     Process only the last N commits
   --all-parents           Follow all parents at merges (default: first-parent only)
+  --cache                 Cache per-commit counts in .cloc-history.cache at the repo
+                          root so later runs skip already-counted commits (off by default)
 
 Everything after -- is passed directly to cloc.
 ```
@@ -110,6 +112,16 @@ Everything after `--` is passed to cloc:
 ./cloc-history.sh -n 100
 ```
 
+### Cache results between runs
+
+```bash
+./cloc-history.sh --cache -s week
+```
+
+With `--cache`, each commit's count is appended to `.cloc-history.cache` in the repository root. Later `--cache` runs reuse those counts and skip the checkout and `cloc` run for any commit already in the file. Entries are keyed by commit hash plus the cloc options after `--`, so runs with different filters don't share counts. The uncommitted working tree is never cached.
+
+The cache is off by default. You'll probably want to add `.cloc-history.cache` to your `.gitignore`. Delete the file to reset it.
+
 ## How it works
 
 1. Validates the repository has no uncommitted changes
@@ -120,7 +132,7 @@ Everything after `--` is passed to cloc:
 
 ## Performance
 
-Each commit requires a `git checkout` and a full `cloc` run, so large repositories can take a while. Use `-n` to limit commits, or use period summarization (`-s week`, `-s month`, `-s year`) which automatically skips intermediate commits.
+Each commit requires a `git checkout` and a full `cloc` run, so large repositories can take a while. Use `-n` to limit commits, or use period summarization (`-s week`, `-s month`, `-s year`) which automatically skips intermediate commits. For repeated runs, `--cache` avoids recounting commits you've already visited.
 
 ## License
 
