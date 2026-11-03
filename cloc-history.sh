@@ -535,8 +535,8 @@ echo "" >&2
 emit_grouped() {
     local header=$1 field=$2 baseline=$3
 
-    printf '%-12s  %10s  %10s\n' "$header" "Code" "Delta"
-    printf '%-12s  %10s  %10s\n' "------------" "----------" "----------"
+    printf '%-12s  %10s  %10s  %10s\n' "$header" "Code" "Delta" "Run Avg"
+    printf '%-12s  %10s  %10s  %10s\n' "------------" "----------" "----------" "----------"
 
     local prev_group="" group_code=0 last_before=$baseline
     local num_periods=0 total_delta=0
@@ -555,9 +555,10 @@ emit_grouped() {
 
         if [[ "$key" != "$prev_group" && -n "$prev_group" ]]; then
             local d=$((group_code - last_before))
-            printf '%-12s  %10s  %10s\n' "$prev_group" "$group_code" "$(format_delta "$d")"
             total_delta=$((total_delta + d))
             num_periods=$((num_periods + 1))
+            printf '%-12s  %10s  %10s  %10s\n' "$prev_group" "$group_code" "$(format_delta "$d")" \
+                "$(format_delta $((total_delta / num_periods)))"
             deltas+=("$d")
             last_before=$group_code
             # Fill empty periods between prev_group and key
@@ -565,8 +566,9 @@ emit_grouped() {
                 local gap
                 gap=$(next_period "$field" "$prev_group")
                 while [[ "$gap" < "$key" ]]; do
-                    printf '%-12s  %10s  %10s\n' "$gap" "$last_before" "0"
                     num_periods=$((num_periods + 1))
+                    printf '%-12s  %10s  %10s  %10s\n' "$gap" "$last_before" "0" \
+                        "$(format_delta $((total_delta / num_periods)))"
                     deltas+=(0)
                     gap=$(next_period "$field" "$gap")
                 done
@@ -580,9 +582,10 @@ emit_grouped() {
     # Emit final group
     if [[ -n "$prev_group" ]]; then
         local d=$((group_code - last_before))
-        printf '%-12s  %10s  %10s\n' "$prev_group" "$group_code" "$(format_delta "$d")"
         total_delta=$((total_delta + d))
         num_periods=$((num_periods + 1))
+        printf '%-12s  %10s  %10s  %10s\n' "$prev_group" "$group_code" "$(format_delta "$d")" \
+            "$(format_delta $((total_delta / num_periods)))"
         deltas+=("$d")
     fi
 
@@ -601,7 +604,7 @@ emit_grouped() {
             median=$(( (mid1 + mid2) / 2 ))
         fi
 
-        printf '%-12s  %10s  %10s\n' "------------" "----------" "----------"
+        printf '%-12s  %10s  %10s  %10s\n' "------------" "----------" "----------" "----------"
         printf '%-12s  %10s  %10s\n' "total"       "" "$(format_delta "$total_delta")"
         printf '%-12s  %10s  %10s\n' "avg/$field"  "" "$(format_delta "$avg")"
         printf '%-12s  %10s  %10s\n' "median/$field" "" "$(format_delta "$median")"
@@ -613,20 +616,22 @@ emit_grouped() {
 # ---------------------------------------------------------------------------
 case "$SUMMARIZE" in
     commit)
-        printf '%-10s  %-12s  %10s  %10s  %s\n' \
-            "Hash" "Date" "Code" "Delta" "Subject"
-        printf '%-10s  %-12s  %10s  %10s  %s\n' \
-            "----------" "------------" "----------" "----------" \
+        printf '%-10s  %-12s  %10s  %10s  %10s  %s\n' \
+            "Hash" "Date" "Code" "Delta" "Run Avg" "Subject"
+        printf '%-10s  %-12s  %10s  %10s  %10s  %s\n' \
+            "----------" "------------" "----------" "----------" "----------" \
             "------------------------------------------------------------"
 
         total_delta=0
         deltas=()
         for r in "${results[@]}"; do
             IFS='|' read -r hash day week month year code delta subject <<< "$r"
-            printf '%-10s  %-12s  %10s  %10s  %.60s\n' \
-                "$hash" "$day" "$code" "$(format_delta "$delta")" "$subject"
             total_delta=$((total_delta + delta))
             deltas+=("$delta")
+            # Running average: mean delta over this row and every row above it
+            printf '%-10s  %-12s  %10s  %10s  %10s  %.60s\n' \
+                "$hash" "$day" "$code" "$(format_delta "$delta")" \
+                "$(format_delta $((total_delta / ${#deltas[@]})))" "$subject"
         done
 
         num=${#results[@]}
@@ -644,8 +649,8 @@ case "$SUMMARIZE" in
                 median=$(( (mid1 + mid2) / 2 ))
             fi
 
-            printf '%-10s  %-12s  %10s  %10s\n' \
-                "----------" "------------" "----------" "----------"
+            printf '%-10s  %-12s  %10s  %10s  %10s\n' \
+                "----------" "------------" "----------" "----------" "----------"
             printf '%-10s  %-12s  %10s  %10s\n' \
                 "total" "" "" "$(format_delta "$total_delta")"
             printf '%-10s  %-12s  %10s  %10s\n' \

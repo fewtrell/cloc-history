@@ -2,7 +2,7 @@
 
 Track lines of code across every commit in a git repository's history using [cloc](https://github.com/AlDanial/cloc).
 
-Shows code line counts and deltas in chronological order, with optional grouping by day, week, month, or year.
+Shows code line counts, deltas, and a running average delta in chronological order, with optional grouping by day, week, month, or year.
 
 ## Prerequisites
 
@@ -59,11 +59,11 @@ Everything after -- is passed directly to cloc.
 ```
 
 ```
-Hash        Date              Code       Delta  Subject
-----------  ------------  ----------  ----------  ---------------------------
-a1b2c3d     2024-01-15          342        +342  Initial commit
-d4e5f6g     2024-01-16          587        +245  Add user authentication
-e7f8a9b     2024-01-18          510         -77  Remove dead code
+Hash        Date                Code       Delta     Run Avg  Subject
+----------  ------------  ----------  ----------  ----------  ---------------------------
+a1b2c3d     2024-01-15           342        +342        +342  Initial commit
+d4e5f6g     2024-01-16           587        +245        +293  Add user authentication
+e7f8a9b     2024-01-18           510         -77        +170  Remove dead code
 ```
 
 ### Summarize by month
@@ -73,11 +73,11 @@ e7f8a9b     2024-01-18          510         -77  Remove dead code
 ```
 
 ```
-Month             Code       Delta
-------------  ----------  ----------
-2024-01              510        +510
-2024-02              830        +320
-2024-03             1102        +272
+Month               Code       Delta     Run Avg
+------------  ----------  ----------  ----------
+2024-01              510        +510        +510
+2024-02              830        +320        +415
+2024-03             1102        +272        +367
 ```
 
 ### Summarize by year
@@ -87,11 +87,11 @@ Month             Code       Delta
 ```
 
 ```
-Year              Code       Delta
-------------  ----------  ----------
-2023              4200        +4200
-2024              8750        +4550
-2025             12300        +3550
+Year                Code       Delta     Run Avg
+------------  ----------  ----------  ----------
+2023                4200       +4200       +4200
+2024                8750       +4550       +4375
+2025               12300       +3550       +4100
 ```
 
 ### Filter with cloc options
