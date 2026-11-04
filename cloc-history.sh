@@ -9,7 +9,8 @@ usage() {
 Usage: cloc-history.sh [OPTIONS] [-- CLOC_OPTIONS...]
 
 Track lines of code (via cloc) for every commit in a git repository's history.
-Commits are shown in chronological order with deltas between each row.
+Commits are shown in chronological order with deltas between each row, plus a
+running commit count (grouped modes also show commits per period).
 If the working tree has uncommitted changes, it is included as the final row.
 
 Options:
@@ -459,8 +460,13 @@ fi
 # Process each commit
 # ---------------------------------------------------------------------------
 
+# Commits since the last counted one; grouped modes skip cloc on all but the last
+# commit in a period, so each result row records how many commits it stands for.
+pending_commits=0
+
 for i in "${!commits[@]}"; do
     commit="${commits[$i]}"
+    pending_commits=$((pending_commits + 1))
 
     # Skip commits that aren't the last in their period
     if [[ "${run_cloc[$i]}" -eq 0 ]]; then
@@ -487,8 +493,9 @@ for i in "${!commits[@]}"; do
     delta=$((code - prev_code))
     prev_code=$code
 
-    # Pipe-delimited record
-    results+=("${short}|${day}|${week}|${month}|${year}|${code}|${delta}|${subject}")
+    # Pipe-delimited record (subject last: it may itself contain '|')
+    results+=("${short}|${day}|${week}|${month}|${year}|${code}|${delta}|${pending_commits}|${subject}")
+    pending_commits=0
 
     printf '\r  [%d/%d] %s  %s' "$processed" "$to_process" "$short" "$day" >&2
 done
@@ -517,7 +524,7 @@ if ! git -C "$REPO_ROOT" diff --quiet 2>/dev/null \
 
     delta=$((code - prev_code))
 
-    results+=("working|${today}|${today_week}|${today_month}|${today_year}|${code}|${delta}|(uncommitted changes)")
+    results+=("working|${today}|${today_week}|${today_month}|${today_year}|${code}|${delta}|0|(uncommitted changes)")
 fi
 
 printf '\r%-60s\r' '' >&2
@@ -528,22 +535,36 @@ else
 fi
 echo "" >&2
 
+# Print the median of the integer arguments (mean of the middle two when even).
+median_of() {
+    local -a sorted
+    local IFS=$'\n'
+    sorted=($(printf '%s\n' "$@" | sort -n))
+    local n=${#sorted[@]}
+    if [[ $((n % 2)) -eq 1 ]]; then
+        echo "${sorted[$((n / 2))]}"
+    else
+        echo $(( (sorted[n / 2 - 1] + sorted[n / 2]) / 2 ))
+    fi
+}
+
 # Emit a grouped table. Uses the latest commit in each period for that row's stats.
 #   $1 = column header ("Date", "Week", "Month", or "Year")
 #   $2 = field name:  "day", "week", "month", or "year"
 #   $3 = baseline code count from before the --since cutoff
 emit_grouped() {
     local header=$1 field=$2 baseline=$3
+    local fmt='%-12s  %10s  %10s  %10s  %10s  %10s\n'
+    local rule='----------'
 
-    printf '%-12s  %10s  %10s  %10s\n' "$header" "Code" "Delta" "Run Avg"
-    printf '%-12s  %10s  %10s  %10s\n' "------------" "----------" "----------" "----------"
+    printf "$fmt" "$header" "Code" "Delta" "Run Avg" "Commits" "Cumulative"
+    printf "$fmt" "------------" "$rule" "$rule" "$rule" "$rule" "$rule"
 
-    local prev_group="" group_code=0 last_before=$baseline
-    local num_periods=0 total_delta=0
-    local -a deltas=()
+    local prev_group="" group_code=0 group_commits=0 last_before=$baseline
+    local num_periods=0 total_delta=0 total_commits=0
 
     for r in "${results[@]}"; do
-        IFS='|' read -r hash day week month year code delta subject <<< "$r"
+        IFS='|' read -r hash day week month year code delta ncommits subject <<< "$r"
 
         local key
         case "$field" in
@@ -556,19 +577,23 @@ emit_grouped() {
         if [[ "$key" != "$prev_group" && -n "$prev_group" ]]; then
             local d=$((group_code - last_before))
             total_delta=$((total_delta + d))
+            total_commits=$((total_commits + group_commits))
             num_periods=$((num_periods + 1))
-            printf '%-12s  %10s  %10s  %10s\n' "$prev_group" "$group_code" "$(format_delta "$d")" \
-                "$(format_delta $((total_delta / num_periods)))"
+            printf "$fmt" "$prev_group" "$group_code" "$(format_delta "$d")" \
+                "$(format_delta $((total_delta / num_periods)))" \
+                "$group_commits" "$total_commits"
             deltas+=("$d")
             last_before=$group_code
+            group_commits=0
             # Fill empty periods between prev_group and key
             if [[ "$FILL_GAPS" -eq 1 ]]; then
                 local gap
                 gap=$(next_period "$field" "$prev_group")
                 while [[ "$gap" < "$key" ]]; do
                     num_periods=$((num_periods + 1))
-                    printf '%-12s  %10s  %10s  %10s\n' "$gap" "$last_before" "0" \
-                        "$(format_delta $((total_delta / num_periods)))"
+                    printf "$fmt" "$gap" "$last_before" "0" \
+                        "$(format_delta $((total_delta / num_periods)))" \
+                        "0" "$total_commits"
                     deltas+=(0)
                     gap=$(next_period "$field" "$gap")
                 done
@@ -577,37 +602,35 @@ emit_grouped() {
 
         prev_group="$key"
         group_code=$code
+        group_commits=$((group_commits + ncommits))
     done
 
     # Emit final group
     if [[ -n "$prev_group" ]]; then
         local d=$((group_code - last_before))
         total_delta=$((total_delta + d))
+        total_commits=$((total_commits + group_commits))
         num_periods=$((num_periods + 1))
-        printf '%-12s  %10s  %10s  %10s\n' "$prev_group" "$group_code" "$(format_delta "$d")" \
-            "$(format_delta $((total_delta / num_periods)))"
+        printf "$fmt" "$prev_group" "$group_code" "$(format_delta "$d")" \
+            "$(format_delta $((total_delta / num_periods)))" \
+            "$group_commits" "$total_commits"
         deltas+=("$d")
     fi
 
     # Summary footer
     if [[ $num_periods -gt 0 ]]; then
         local avg=$((total_delta / num_periods))
-
-        # Calculate median
-        IFS=$'\n' sorted=($(sort -n <<<"${deltas[*]}"))
         local median
-        if [[ $((num_periods % 2)) -eq 1 ]]; then
-            median=${sorted[$((num_periods / 2))]}
-        else
-            local mid1=${sorted[$((num_periods / 2 - 1))]}
-            local mid2=${sorted[$((num_periods / 2))]}
-            median=$(( (mid1 + mid2) / 2 ))
-        fi
+        median=$(median_of "${deltas[@]}")
+        # Footer labels span the (empty) Code column so longer ones like
+        # "commits/month" don't push the numbers out of alignment.
+        local foot='%-24s  %10s  %10s  %10s\n'
 
-        printf '%-12s  %10s  %10s  %10s\n' "------------" "----------" "----------" "----------"
-        printf '%-12s  %10s  %10s\n' "total"       "" "$(format_delta "$total_delta")"
-        printf '%-12s  %10s  %10s\n' "avg/$field"  "" "$(format_delta "$avg")"
-        printf '%-12s  %10s  %10s\n' "median/$field" "" "$(format_delta "$median")"
+        printf "$fmt" "------------" "$rule" "$rule" "$rule" "$rule" "$rule"
+        printf "$foot" "total"          "$(format_delta "$total_delta")" "" "$total_commits"
+        printf '%-24s  %10s\n' "avg/$field"     "$(format_delta "$avg")"
+        printf '%-24s  %10s\n' "median/$field"  "$(format_delta "$median")"
+        printf "$foot" "commits/$field" "" "" "$((total_commits / num_periods))"
     fi
 }
 
@@ -616,43 +639,36 @@ emit_grouped() {
 # ---------------------------------------------------------------------------
 case "$SUMMARIZE" in
     commit)
-        printf '%-10s  %-12s  %10s  %10s  %10s  %s\n' \
-            "Hash" "Date" "Code" "Delta" "Run Avg" "Subject"
-        printf '%-10s  %-12s  %10s  %10s  %10s  %s\n' \
-            "----------" "------------" "----------" "----------" "----------" \
+        # Commits column: running count of commits up to and including this row
+        printf '%-10s  %-12s  %10s  %10s  %10s  %10s  %s\n' \
+            "Hash" "Date" "Code" "Delta" "Run Avg" "Commits" "Subject"
+        printf '%-10s  %-12s  %10s  %10s  %10s  %10s  %s\n' \
+            "----------" "------------" "----------" "----------" "----------" "----------" \
             "------------------------------------------------------------"
 
         total_delta=0
+        total_commits=0
         deltas=()
         for r in "${results[@]}"; do
-            IFS='|' read -r hash day week month year code delta subject <<< "$r"
+            IFS='|' read -r hash day week month year code delta ncommits subject <<< "$r"
             total_delta=$((total_delta + delta))
+            total_commits=$((total_commits + ncommits))
             deltas+=("$delta")
             # Running average: mean delta over this row and every row above it
-            printf '%-10s  %-12s  %10s  %10s  %10s  %.60s\n' \
+            printf '%-10s  %-12s  %10s  %10s  %10s  %10s  %.60s\n' \
                 "$hash" "$day" "$code" "$(format_delta "$delta")" \
-                "$(format_delta $((total_delta / ${#deltas[@]})))" "$subject"
+                "$(format_delta $((total_delta / ${#deltas[@]})))" "$total_commits" "$subject"
         done
 
         num=${#results[@]}
         if [[ $num -gt 0 ]]; then
             avg=$((total_delta / num))
+            median=$(median_of "${deltas[@]}")
 
-            # Calculate median
-            IFS=$'\n' sorted=($(sort -n <<<"${deltas[*]}"))
-            median=0
-            if [[ $((num % 2)) -eq 1 ]]; then
-                median=${sorted[$((num / 2))]}
-            else
-                mid1=${sorted[$((num / 2 - 1))]}
-                mid2=${sorted[$((num / 2))]}
-                median=$(( (mid1 + mid2) / 2 ))
-            fi
-
-            printf '%-10s  %-12s  %10s  %10s  %10s\n' \
-                "----------" "------------" "----------" "----------" "----------"
-            printf '%-10s  %-12s  %10s  %10s\n' \
-                "total" "" "" "$(format_delta "$total_delta")"
+            printf '%-10s  %-12s  %10s  %10s  %10s  %10s\n' \
+                "----------" "------------" "----------" "----------" "----------" "----------"
+            printf '%-10s  %-12s  %10s  %10s  %10s  %10s\n' \
+                "total" "" "" "$(format_delta "$total_delta")" "" "$total_commits"
             printf '%-10s  %-12s  %10s  %10s\n' \
                 "avg/commit" "" "" "$(format_delta "$avg")"
             printf '%-10s  %-12s  %10s  %10s\n' \
