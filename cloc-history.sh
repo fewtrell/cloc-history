@@ -27,7 +27,9 @@ Options:
   --committer-date        Order and label rows by committer date (the rebase date)
                           instead of the default author date (original commit time)
   --cache                 Cache per-commit counts in .cloc-history.cache at the repo
-                          root so later runs skip already-counted commits (off by default)
+                          root so later runs skip already-counted commits (off by default;
+                          set CLOC_HISTORY_CACHE=1 in your shell profile to turn it on always)
+  --no-cache              Don't use the cache, even if CLOC_HISTORY_CACHE=1
 
 Everything after -- is passed directly to cloc. Use this to filter languages,
 exclude directories, etc.
@@ -68,7 +70,10 @@ FILL_GAPS=0
 # --committer-date switches to committer date (the rebase time).
 DATE_SORT='%at'   # epoch used to order commits
 DATE_LABEL='%ad'  # formatted date used for row labels / period keys
+# The cache only saves time; it never changes the output, so (as an exception
+# to flags-only options) CLOC_HISTORY_CACHE=1 lets a user turn it on permanently.
 USE_CACHE=0
+[[ "${CLOC_HISTORY_CACHE:-}" == 1 ]] && USE_CACHE=1
 CLOC_OPTS=()
 
 while [[ $# -gt 0 ]]; do
@@ -81,6 +86,7 @@ while [[ $# -gt 0 ]]; do
         --fill-gaps)      FILL_GAPS=1; shift ;;
         --committer-date) DATE_SORT='%ct'; DATE_LABEL='%cd'; shift ;;
         --cache)          USE_CACHE=1; shift ;;
+        --no-cache)       USE_CACHE=0; shift ;;
         --)               shift; CLOC_OPTS=("$@"); break ;;
         *)                echo "Error: unknown option: $1" >&2
                           echo "Use -h for help." >&2

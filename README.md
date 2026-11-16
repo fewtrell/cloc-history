@@ -45,7 +45,9 @@ Options:
   -n, --max-commits N     Process only the last N commits
   --all-parents           Follow all parents at merges (default: first-parent only)
   --cache                 Cache per-commit counts in .cloc-history.cache at the repo
-                          root so later runs skip already-counted commits (off by default)
+                          root so later runs skip already-counted commits (off by default;
+                          set CLOC_HISTORY_CACHE=1 in your shell profile to turn it on always)
+  --no-cache              Don't use the cache, even if CLOC_HISTORY_CACHE=1
 
 Everything after -- is passed directly to cloc.
 ```
@@ -122,7 +124,7 @@ Everything after `--` is passed to cloc:
 
 With `--cache`, each commit's count is appended to `.cloc-history.cache` in the repository root. Later `--cache` runs reuse those counts and skip the checkout and `cloc` run for any commit already in the file. Entries are keyed by commit hash plus the cloc options after `--`, so runs with different filters don't share counts. The uncommitted working tree is never cached.
 
-The cache is off by default. You'll probably want to add `.cloc-history.cache` to your `.gitignore`. Delete the file to reset it.
+The cache is off by default. To turn it on for every run, add `export CLOC_HISTORY_CACHE=1` to your shell profile; `--no-cache` then turns it off for a single run. You'll probably want to add `.cloc-history.cache` to your `.gitignore`. Delete the file to reset it.
 
 ## How it works
 
