@@ -623,14 +623,13 @@ emit_grouped() {
         local median
         median=$(median_of "${deltas[@]}")
         # Footer labels span the (empty) Code column so longer ones like
-        # "commits/month" don't push the numbers out of alignment.
+        # "median/month" don't push the numbers out of alignment.
         local foot='%-24s  %10s  %10s  %10s\n'
 
         printf "$fmt" "------------" "$rule" "$rule" "$rule" "$rule" "$rule"
         printf "$foot" "total"          "$(format_delta "$total_delta")" "" "$total_commits"
-        printf '%-24s  %10s\n' "avg/$field"     "$(format_delta "$avg")"
+        printf "$foot" "avg/$field"     "$(format_delta "$avg")" "" "$((total_commits / num_periods))"
         printf '%-24s  %10s\n' "median/$field"  "$(format_delta "$median")"
-        printf "$foot" "commits/$field" "" "" "$((total_commits / num_periods))"
     fi
 }
 
