@@ -345,7 +345,9 @@ to_process=0
 for v in "${run_cloc[@]}"; do to_process=$((to_process + v)); done
 
 if [[ $total -gt 0 ]]; then
-    echo "Processing $to_process of $total commits (grouped by $SUMMARIZE)..." >&2
+    cache_state=disabled
+    [[ $USE_CACHE -eq 1 ]] && cache_state=enabled
+    echo "Processing $to_process of $total commits (grouped by $SUMMARIZE, cache $cache_state)..." >&2
 fi
 
 # ---------------------------------------------------------------------------
